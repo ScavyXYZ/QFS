@@ -191,7 +191,7 @@ int main(int argc, char* argv[]) {
     std::string targetFilename;
     std::string startingDir;
     bool saveToFile = false;
-    bool verboseOutput = false;
+    bool verboseOutput = true;
 
     // Processing command line arguments
     if (argc == 1) {
@@ -344,4 +344,5 @@ int main(int argc, char* argv[]) {
     std::cout << "Press enter to close...";
     std::cin.ignore();
     return 0;
+
 }
