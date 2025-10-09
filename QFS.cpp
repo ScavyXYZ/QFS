@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <thread>
@@ -86,7 +86,7 @@ bool validateArguments(int argc, char* argv[], std::string& targetFilename, std:
                 std::cerr << "Error: --save must be 0 or 1\n";
                 return false;
             }
-            saveToFile = (val == "1");
+            saveToFile = bool(val == "1");
             i++;
         }
         else if (arg == "--verbose") {
@@ -99,7 +99,7 @@ bool validateArguments(int argc, char* argv[], std::string& targetFilename, std:
                 std::cerr << "Error: --verbose must be 0 or 1\n";
                 return false;
             }
-            printDuringSearch = (val == "1");
+            verboseOutput = bool(val == "1");
             i++;
         }
         else if (arg == "--help") {
@@ -344,5 +344,4 @@ int main(int argc, char* argv[]) {
     std::cout << "Press enter to close...";
     std::cin.ignore();
     return 0;
-
 }
