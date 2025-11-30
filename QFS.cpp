@@ -31,29 +31,57 @@ std::vector<std::thread> threads;        // Active search threads
 std::atomic<bool> printDuringSearch(true); // Controls real-time output
 
 // Forward declarations
-void launchSearch(const fs::path& directory, const std::string& filename);
-void searchInDirectory(const fs::path& directory, const std::string& filename);
+void launchSearch(const fs::path& directory, const std::vector<std::string>& filenamePatterns);
+void searchInDirectory(const fs::path& directory, const std::vector<std::string>& filenamePatterns);
 void printUsage(const char* programName);
-bool validateArguments(int argc, char* argv[], std::string& targetFilename,
+bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetPatterns,
     std::string& startingDir, bool& saveToFile, bool& verboseOutput);
+
+/**
+ * Splits string by delimiter and returns vector of tokens
+ */
+std::vector<std::string> splitString(const std::string& str, char delimiter) {
+    std::vector<std::string> tokens;
+    std::string token;
+    std::istringstream tokenStream(str);
+
+    while (std::getline(tokenStream, token, delimiter)) {
+        if (!token.empty()) {
+            tokens.push_back(token);
+        }
+    }
+
+    return tokens;
+}
 
 /**
  * Validates command line arguments and extracts parameters
  */
-bool validateArguments(int argc, char* argv[], std::string& targetFilename,
+bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetPatterns,
     std::string& startingDir, bool& saveToFile, bool& verboseOutput) {
-    for (int i = 1; i < argc; ) {
+
+    if (argc < 2) {
+        return false; // Interactive mode
+    }
+
+    // Parse target patterns (can be multiple arguments or comma-separated)
+    std::string firstArg = argv[1];
+    if (firstArg.find(',') != std::string::npos) {
+        // Comma-separated patterns in one argument
+        targetPatterns = splitString(firstArg, ',');
+    }
+    else {
+        // Single pattern or start of options
+        if (firstArg.substr(0, 2) != "--") {
+            targetPatterns.push_back(firstArg);
+        }
+    }
+
+    // Parse options
+    for (int i = 2; i < argc; ) {
         std::string arg = argv[i];
 
-        if (arg == "--target") {
-            if (i + 1 >= argc || argv[i + 1][0] == '-') {
-                std::cerr << "Error: --target requires a filename argument\n";
-                return false;
-            }
-            targetFilename = argv[++i];
-            i++;
-        }
-        else if (arg == "--threads") {
+        if (arg == "--threads") {
             if (i + 1 >= argc || argv[i + 1][0] == '-') {
                 std::cerr << "Error: --threads requires a numeric argument\n";
                 return false;
@@ -112,14 +140,21 @@ bool validateArguments(int argc, char* argv[], std::string& targetFilename,
             return false;
         }
         else {
-            std::cerr << "Error: Unknown option '" << arg << "'\n";
-            printUsage(argv[0]);
-            return false;
+            // Treat as additional filename pattern
+            if (arg.substr(0, 2) != "--") {
+                targetPatterns.push_back(arg);
+            }
+            else {
+                std::cerr << "Error: Unknown option '" << arg << "'\n";
+                printUsage(argv[0]);
+                return false;
+            }
+            i++;
         }
     }
 
-    if (targetFilename.empty()) {
-        std::cerr << "Error: Target filename not specified!\n";
+    if (targetPatterns.empty()) {
+        std::cerr << "Error: No target filename patterns specified!\n";
         printUsage(argv[0]);
         return false;
     }
@@ -131,9 +166,17 @@ bool validateArguments(int argc, char* argv[], std::string& targetFilename,
  * Displays program usage information
  */
 void printUsage(const char* programName) {
-    std::cout << "Usage: " << programName << " --target <filename> [options]\n";
+    std::cout << "Usage: " << programName << " <pattern1> [pattern2] ... [options]\n";
+    std::cout << "   or: " << programName << " \"pattern1,pattern2,...\" [options]\n";
+    std::cout << "   or: " << programName << " (for interactive mode)\n\n";
+    std::cout << "Patterns: File name patterns to search for (case insensitive)\n";
+    std::cout << "          Multiple patterns can be specified as separate arguments\n";
+    std::cout << "          or comma-separated in one argument\n\n";
+    std::cout << "Examples:\n";
+    std::cout << "  " << programName << " \".mp3\" \".exe\" --dir C:\\Users\n";
+    std::cout << "  " << programName << " \"target1,.mp3,.exe\" --threads 4\n";
+    std::cout << "  " << programName << " document report --save 1\n\n";
     std::cout << "Options:\n";
-    std::cout << "  --target <filename>    File to search for (required)\n";
     std::cout << "  --threads <num>        Number of threads to use (1-"
         << std::thread::hardware_concurrency() << ", default: all cores)\n";
     std::cout << "  --dir <directory>      Starting directory (default: current directory)\n";
@@ -152,9 +195,25 @@ std::string toLower(const std::string& str) {
 }
 
 /**
+ * Checks if filename matches any of the patterns
+ */
+bool matchesAnyPattern(const std::string& filename, const std::vector<std::string>& patterns) {
+    std::string lowerFilename = toLower(filename);
+
+    for (const auto& pattern : patterns) {
+        std::string lowerPattern = toLower(pattern);
+        if (lowerFilename.find(lowerPattern) != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
  * Searches for files in a directory and its subdirectories
  */
-void searchInDirectory(const fs::path& directory, const std::string& filename) {
+void searchInDirectory(const fs::path& directory, const std::vector<std::string>& filenamePatterns) {
     try {
         if (!fs::exists(directory) || !fs::is_directory(directory)) {
             return;
@@ -164,12 +223,11 @@ void searchInDirectory(const fs::path& directory, const std::string& filename) {
             fs::directory_options::skip_permission_denied)) {
             try {
                 if (entry.is_directory()) {
-                    launchSearch(entry.path(), filename);
+                    launchSearch(entry.path(), filenamePatterns);
                 }
                 else if (entry.is_regular_file()) {
-                    // Case-insensitive filename comparison
                     std::string entryFilename = entry.path().filename().string();
-                    if (toLower(entryFilename).find(toLower(filename)) != std::string::npos) {
+                    if (matchesAnyPattern(entryFilename, filenamePatterns)) {
                         std::string absolutePath = fs::absolute(entry.path()).string();
                         std::string result = "Found " + entryFilename + " at: " + absolutePath;
 
@@ -199,10 +257,10 @@ void searchInDirectory(const fs::path& directory, const std::string& filename) {
 /**
  * Launches a new search thread or performs search directly if thread limit reached
  */
-void launchSearch(const fs::path& directory, const std::string& filename) {
+void launchSearch(const fs::path& directory, const std::vector<std::string>& filenamePatterns) {
     if (activeThreads >= maxThreads) {
         // Execute directly if thread limit reached
-        searchInDirectory(directory, filename);
+        searchInDirectory(directory, filenamePatterns);
         return;
     }
 
@@ -210,8 +268,8 @@ void launchSearch(const fs::path& directory, const std::string& filename) {
     std::lock_guard<std::mutex> lock(threadsMutex);
     activeThreads++;
 
-    threads.emplace_back([directory, filename]() {
-        searchInDirectory(directory, filename);
+    threads.emplace_back([directory, filenamePatterns]() {
+        searchInDirectory(directory, filenamePatterns);
         activeThreads--;
         threadsCV.notify_one();  // Notify main thread about completion
         });
@@ -220,24 +278,45 @@ void launchSearch(const fs::path& directory, const std::string& filename) {
 /**
  * Gets user input for interactive mode
  */
-void getInteractiveInput(std::string& targetFilename, std::string& startingDir,
+void getInteractiveInput(std::vector<std::string>& targetPatterns, std::string& startingDir,
     bool& saveToFile, int& threadCount) {
     std::cout << " Quick File Search (QSF)\n\n";
 
-    // Get target filename
-    while (targetFilename.empty()) {
-        std::cout << "Enter the file name to search for (case insensitive): ";
-        std::getline(std::cin, targetFilename);
+    // Get target patterns
+    std::string input;
+    while (targetPatterns.empty()) {
+        std::cout << "Enter file name patterns to search for (case insensitive)\n";
+        std::cout << "You can enter multiple patterns separated by commas: ";
+        std::getline(std::cin, input);
 
-        if (targetFilename.empty()) {
-            std::cout << "File name cannot be empty.\n";
+        if (input.empty()) {
+            std::cout << "At least one pattern is required.\n";
+            continue;
+        }
+
+        targetPatterns = splitString(input, ',');
+
+        // Remove any leading/trailing whitespace from patterns
+        for (auto& pattern : targetPatterns) {
+            pattern.erase(0, pattern.find_first_not_of(" \t"));
+            pattern.erase(pattern.find_last_not_of(" \t") + 1);
+        }
+
+        // Remove empty patterns
+        targetPatterns.erase(
+            std::remove_if(targetPatterns.begin(), targetPatterns.end(),
+                [](const std::string& s) { return s.empty(); }),
+            targetPatterns.end()
+        );
+
+        if (targetPatterns.empty()) {
+            std::cout << "No valid patterns entered.\n";
         }
     }
 
     std::cout << "\nYour system has " << maxThreads << " logical cores available.\n";
 
     // Get thread count
-    std::string input;
     while (true) {
         std::cout << "Enter how many cores to use for search (1-" << maxThreads << "): ";
         std::getline(std::cin, input);
@@ -344,7 +423,7 @@ void displayResults(bool saveToFile, bool interactiveMode) {
 }
 
 int main(int argc, char* argv[]) {
-    std::string targetFilename;
+    std::vector<std::string> targetPatterns;
     std::string startingDir;
     bool saveToFile = false;
     bool verboseOutput = true;
@@ -353,11 +432,11 @@ int main(int argc, char* argv[]) {
     // Process command line arguments or get interactive input
     if (interactiveMode) {
         int threadCount;
-        getInteractiveInput(targetFilename, startingDir, saveToFile, threadCount);
+        getInteractiveInput(targetPatterns, startingDir, saveToFile, threadCount);
         maxThreads = threadCount;
     }
     else {
-        if (!validateArguments(argc, argv, targetFilename, startingDir, saveToFile, verboseOutput)) {
+        if (!validateArguments(argc, argv, targetPatterns, startingDir, saveToFile, verboseOutput)) {
             return 1;
         }
         printDuringSearch = verboseOutput;
@@ -369,7 +448,14 @@ int main(int argc, char* argv[]) {
     }
 
     // Display search configuration
-    std::cout << "\nStarting search for '" << targetFilename << "' using " << maxThreads << " threads...\n";
+    std::cout << "\nStarting search for patterns: ";
+    for (size_t i = 0; i < targetPatterns.size(); ++i) {
+        std::cout << "'" << targetPatterns[i] << "'";
+        if (i < targetPatterns.size() - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << " using " << maxThreads << " threads...\n";
     std::cout << "Starting from directory: " << startingDir << "\n";
     if (saveToFile) {
         std::cout << "Results will be saved to 'founded.txt'\n";
@@ -379,7 +465,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Search in progress... Please wait.\n";
 
     // Begin search
-    searchInDirectory(startingDir, targetFilename);
+    searchInDirectory(startingDir, targetPatterns);
 
     // Wait for all threads to complete
     {
