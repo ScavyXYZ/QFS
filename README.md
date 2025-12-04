@@ -21,7 +21,7 @@ You will be prompted for:
 ### 2. Command-Line Mode
 Run the program with arguments for non-interactive use:
 ```Bash
-./qfs --target <filename> [options]
+./qfs <filename> [options]
 ```
 #### Options
 
@@ -36,7 +36,7 @@ Run the program with arguments for non-interactive use:
 
 #### Example
 ```Bash
-./qfs --target myfile.txt --threads 4 --dir /home/user --save 1 --verbose 1
+./qfs myfile.txt --threads 4 --dir /home/user --save 1 --verbose 1
 ```
 ## Build
 ### Requirements
