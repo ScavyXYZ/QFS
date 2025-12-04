@@ -1,14 +1,72 @@
-cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required(VERSION 3.8)
 
-if (POLICY CMP0141)
+# Set policy for MSVC debug information format if available
+if(POLICY CMP0141)
   cmake_policy(SET CMP0141 NEW)
   set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
 endif()
 
-project ("QFS")
+# Project definition
+project("QFS" 
+        VERSION 2.0.0
+        DESCRIPTION "Quick File Search - Multi-threaded file search with logical operators and regex support"
+        LANGUAGES CXX)
 
-add_executable (QFS "QFS.cpp")
+# Create executable
+add_executable(QFS "QFS.cpp")
 
-if (CMAKE_VERSION VERSION_GREATER 3.12)
-  set_property(TARGET QFS PROPERTY CXX_STANDARD 20)
+# Set C++ standard to C++17 (required for <filesystem>)
+target_compile_features(QFS PRIVATE cxx_std_17)
+
+# Ensure C++17 is required
+set_target_properties(QFS PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+
+# Platform-specific settings
+if(WIN32)
+    # Windows-specific settings
+    target_compile_definitions(QFS PRIVATE 
+        _CRT_SECURE_NO_WARNINGS
+        NOMINMAX
+    )
+elseif(UNIX)
+    # Linux/Unix-specific settings
+    target_link_libraries(QFS PRIVATE pthread)
+    
+    # Link filesystem library if needed (required for GCC < 9)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+        target_link_libraries(QFS PRIVATE stdc++fs)
+    endif()
 endif()
+
+# Compiler-specific optimizations
+if(MSVC)
+    target_compile_options(QFS PRIVATE 
+        /W4          # Warning level 4
+        /permissive- # Standards conformance
+        $<$<CONFIG:Release>:/O2 /GL>  # Optimize for speed and whole program optimization
+    )
+    target_link_options(QFS PRIVATE
+        $<$<CONFIG:Release>:/LTCG>    # Link-time code generation
+    )
+else()
+    target_compile_options(QFS PRIVATE
+        -Wall -Wextra -Wpedantic      # Enable warnings
+        $<$<CONFIG:Release>:-O3>      # Optimize for speed
+    )
+endif()
+
+# Installation rules (optional)
+install(TARGETS QFS
+        RUNTIME DESTINATION bin
+)
+
+# Print build information
+message(STATUS "QFS Configuration:")
+message(STATUS "  Version: ${PROJECT_VERSION}")
+message(STATUS "  C++ Standard: C++17")
+message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
