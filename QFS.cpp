@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <sstream>
 #include <condition_variable>
+#include <regex>
 
 namespace fs = std::filesystem;
 
@@ -30,51 +31,161 @@ std::vector<std::string> searchResults;  // Stores found file paths
 std::vector<std::thread> threads;        // Active search threads
 std::atomic<bool> printDuringSearch(true); // Controls real-time output
 
+// Search modes and regex flag
+enum class SearchMode {
+    OR,     // Match any pattern (default)
+    AND,    // Match all patterns
+    SINGLE  // Single pattern
+};
+
+enum class PatternType {
+    SIMPLE, // Simple substring search (case-insensitive)
+    REGEX   // Regular expression
+};
+
 // Forward declarations
-void launchSearch(const fs::path& directory, const std::vector<std::string>& filenamePatterns);
-void searchInDirectory(const fs::path& directory, const std::vector<std::string>& filenamePatterns);
+void launchSearch(const fs::path& directory, const std::vector<std::string>& filenamePatterns,
+    SearchMode mode, PatternType patternType);
+void searchInDirectory(const fs::path& directory, const std::vector<std::string>& filenamePatterns,
+    SearchMode mode, PatternType patternType);
 void printUsage(const char* programName);
 bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetPatterns,
-    std::string& startingDir, bool& saveToFile, bool& verboseOutput);
+    std::string& startingDir, bool& saveToFile, bool& verboseOutput,
+    SearchMode& searchMode, PatternType& patternType);
+bool parseSearchPatterns(const std::string& input, std::vector<std::string>& patterns,
+    SearchMode& mode, PatternType& patternType);
+bool matchesPatterns(const std::string& filename, const std::vector<std::string>& patterns,
+    SearchMode mode, PatternType patternType);
 
 /**
  * Splits string by delimiter and returns vector of tokens
  */
-std::vector<std::string> splitString(const std::string& str, char delimiter) {
+std::vector<std::string> splitString(const std::string& str, const std::string& delimiter) {
     std::vector<std::string> tokens;
-    std::string token;
-    std::istringstream tokenStream(str);
+    size_t start = 0;
+    size_t end = str.find(delimiter);
 
-    while (std::getline(tokenStream, token, delimiter)) {
+    while (end != std::string::npos) {
+        std::string token = str.substr(start, end - start);
         if (!token.empty()) {
             tokens.push_back(token);
         }
+        start = end + delimiter.length();
+        end = str.find(delimiter, start);
+    }
+
+    // Add the last token
+    std::string lastToken = str.substr(start);
+    if (!lastToken.empty()) {
+        tokens.push_back(lastToken);
     }
 
     return tokens;
 }
 
 /**
+ * Parses search patterns and determines search mode and pattern type
+ */
+bool parseSearchPatterns(const std::string& input, std::vector<std::string>& patterns,
+    SearchMode& mode, PatternType& patternType) {
+    std::string trimmedInput = input;
+
+    // Remove leading/trailing whitespace
+    trimmedInput.erase(0, trimmedInput.find_first_not_of(" \t"));
+    trimmedInput.erase(trimmedInput.find_last_not_of(" \t") + 1);
+
+    if (trimmedInput.empty()) {
+        return false;
+    }
+
+    // Check if pattern is regex (starts and ends with /)
+    if (trimmedInput.size() >= 2 && trimmedInput[0] == '/' && trimmedInput.back() == '/') {
+        patternType = PatternType::REGEX;
+        // Remove the slashes
+        trimmedInput = trimmedInput.substr(1, trimmedInput.size() - 2);
+
+        // Check for logical operators in regex mode
+        size_t andPos = trimmedInput.find("&&");
+        size_t orPos = trimmedInput.find("||");
+
+        if (andPos != std::string::npos && orPos != std::string::npos) {
+            std::cerr << "Error: Cannot use both && and || in regex pattern\n";
+            return false;
+        }
+
+        if (andPos != std::string::npos) {
+            mode = SearchMode::AND;
+            patterns = splitString(trimmedInput, "&&");
+        }
+        else if (orPos != std::string::npos) {
+            mode = SearchMode::OR;
+            patterns = splitString(trimmedInput, "||");
+        }
+        else {
+            mode = SearchMode::SINGLE;
+            patterns.push_back(trimmedInput);
+        }
+    }
+    else {
+        // Simple pattern mode
+        patternType = PatternType::SIMPLE;
+
+        // Check for logical operators
+        size_t andPos = trimmedInput.find("&&");
+        size_t orPos = trimmedInput.find("||");
+
+        if (andPos != std::string::npos && orPos != std::string::npos) {
+            std::cerr << "Error: Cannot use both && and || in the same search pattern\n";
+            return false;
+        }
+
+        if (andPos != std::string::npos) {
+            mode = SearchMode::AND;
+            patterns = splitString(trimmedInput, "&&");
+        }
+        else if (orPos != std::string::npos) {
+            mode = SearchMode::OR;
+            patterns = splitString(trimmedInput, "||");
+        }
+        else {
+            mode = SearchMode::SINGLE;
+            patterns.push_back(trimmedInput);
+        }
+    }
+
+    // Remove whitespace from each pattern
+    for (auto& pattern : patterns) {
+        pattern.erase(0, pattern.find_first_not_of(" \t"));
+        pattern.erase(pattern.find_last_not_of(" \t") + 1);
+    }
+
+    // Remove empty patterns
+    patterns.erase(std::remove_if(patterns.begin(), patterns.end(),
+        [](const std::string& s) { return s.empty(); }), patterns.end());
+
+    if (patterns.empty()) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * Validates command line arguments and extracts parameters
  */
 bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetPatterns,
-    std::string& startingDir, bool& saveToFile, bool& verboseOutput) {
+    std::string& startingDir, bool& saveToFile, bool& verboseOutput,
+    SearchMode& searchMode, PatternType& patternType) {
 
     if (argc < 2) {
         return false; // Interactive mode
     }
 
-    // Parse target patterns (can be multiple arguments or comma-separated)
+    // Parse target patterns with logical operators
     std::string firstArg = argv[1];
-    if (firstArg.find(',') != std::string::npos) {
-        // Comma-separated patterns in one argument
-        targetPatterns = splitString(firstArg, ',');
-    }
-    else {
-        // Single pattern or start of options
-        if (firstArg.substr(0, 2) != "--") {
-            targetPatterns.push_back(firstArg);
-        }
+    if (!parseSearchPatterns(firstArg, targetPatterns, searchMode, patternType)) {
+        std::cerr << "Error: Invalid search pattern\n";
+        return false;
     }
 
     // Parse options
@@ -140,16 +251,9 @@ bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetP
             return false;
         }
         else {
-            // Treat as additional filename pattern
-            if (arg.substr(0, 2) != "--") {
-                targetPatterns.push_back(arg);
-            }
-            else {
-                std::cerr << "Error: Unknown option '" << arg << "'\n";
-                printUsage(argv[0]);
-                return false;
-            }
-            i++;
+            std::cerr << "Error: Unknown option: " << arg << "\n";
+            printUsage(argv[0]);
+            return false;
         }
     }
 
@@ -166,16 +270,26 @@ bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetP
  * Displays program usage information
  */
 void printUsage(const char* programName) {
-    std::cout << "Usage: " << programName << " <pattern1> [pattern2] ... [options]\n";
-    std::cout << "   or: " << programName << " \"pattern1,pattern2,...\" [options]\n";
+    std::cout << "Usage: " << programName << " <pattern> [options]\n";
     std::cout << "   or: " << programName << " (for interactive mode)\n\n";
-    std::cout << "Patterns: File name patterns to search for (case insensitive)\n";
-    std::cout << "          Multiple patterns can be specified as separate arguments\n";
-    std::cout << "          or comma-separated in one argument\n\n";
+    std::cout << "Patterns can include:\n";
+    std::cout << "  Simple patterns:            hello&&.exe (case-insensitive substring search)\n";
+    std::cout << "  Regular expressions (regex): /hello.*\\.exe/ (wrap regex in /.../)\n";
+    std::cout << "Important: In regex patterns, escape special characters properly:\n";
+    std::cout << "  - \\. for literal dot (not any character)\n";
+    std::cout << "  - \\\\ for literal backslash\n";
+    std::cout << "  - Use double backslashes in command line: /.*\\.txt/\n";
+    std::cout << "Logical operators:\n";
+    std::cout << "  pattern1&&pattern2    Find files matching ALL patterns (AND)\n";
+    std::cout << "  pattern1||pattern2    Find files matching ANY pattern (OR)\n";
+    std::cout << "  pattern               Find files matching single pattern\n\n";
     std::cout << "Examples:\n";
-    std::cout << "  " << programName << " \".mp3\" \".exe\" --dir C:\\Users\n";
-    std::cout << "  " << programName << " \"target1,.mp3,.exe\" --threads 4\n";
-    std::cout << "  " << programName << " document report --save 1\n\n";
+    std::cout << "  " << programName << " \"hello&&.exe\"          Find files with 'hello' AND '.exe' in name\n";
+    std::cout << "  " << programName << " \"hello||.exe\"          Find files with 'hello' OR '.exe' in name\n";
+    std::cout << "  " << programName << " \"/.*\\.(txt|md)/\"      Find all .txt and .md files (regex)\n";
+    std::cout << "  " << programName << " \"/XYZ_.+\\.bin/\"      Find files starting with XYZ_ and ending with .bin\n";
+    std::cout << "  " << programName << " \"/test[0-9]+\\.exe/\"  Find files like test1.exe, test42.exe (regex)\n";
+    std::cout << "  " << programName << " \"document\" --dir C:\\Users\n\n";
     std::cout << "Options:\n";
     std::cout << "  --threads <num>        Number of threads to use (1-"
         << std::thread::hardware_concurrency() << ", default: all cores)\n";
@@ -186,7 +300,7 @@ void printUsage(const char* programName) {
 }
 
 /**
- * Converts string to lowercase for case-insensitive comparison
+ * Converts string to lowercase for case-insensitive comparison (simple mode)
  */
 std::string toLower(const std::string& str) {
     std::string result = str;
@@ -195,25 +309,97 @@ std::string toLower(const std::string& str) {
 }
 
 /**
- * Checks if filename matches any of the patterns
+ * Checks if filename matches patterns based on search mode and pattern type
  */
-bool matchesAnyPattern(const std::string& filename, const std::vector<std::string>& patterns) {
-    std::string lowerFilename = toLower(filename);
+bool matchesPatterns(const std::string& filename, const std::vector<std::string>& patterns,
+    SearchMode mode, PatternType patternType) {
 
-    for (const auto& pattern : patterns) {
-        std::string lowerPattern = toLower(pattern);
-        if (lowerFilename.find(lowerPattern) != std::string::npos) {
+    if (patternType == PatternType::SIMPLE) {
+        // Simple substring search (case-insensitive)
+        std::string lowerFilename = toLower(filename);
+
+        if (mode == SearchMode::OR) {
+            // Match ANY pattern (OR logic)
+            for (const auto& pattern : patterns) {
+                std::string lowerPattern = toLower(pattern);
+                if (lowerFilename.find(lowerPattern) != std::string::npos) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        else if (mode == SearchMode::AND) {
+            // Match ALL patterns (AND logic)
+            for (const auto& pattern : patterns) {
+                std::string lowerPattern = toLower(pattern);
+                if (lowerFilename.find(lowerPattern) == std::string::npos) {
+                    return false;
+                }
+            }
             return true;
         }
+        else {
+            // SINGLE mode - match the only pattern
+            std::string lowerPattern = toLower(patterns[0]);
+            return lowerFilename.find(lowerPattern) != std::string::npos;
+        }
     }
-
-    return false;
+    else {
+        // REGEX mode
+        if (mode == SearchMode::OR) {
+            // Match ANY pattern (OR logic)
+            for (const auto& pattern : patterns) {
+                try {
+                    std::regex re(pattern, std::regex::icase | std::regex::ECMAScript); // Case-insensitive
+                    if (std::regex_match(filename, re)) {
+                        return true;
+                    }
+                }
+                catch (const std::regex_error& e) {
+                    std::lock_guard<std::mutex> coutLock(coutMutex);
+                    std::cerr << "Regex error for pattern '" << pattern << "': " << e.what() << "\n";
+                    return false;
+                }
+            }
+            return false;
+        }
+        else if (mode == SearchMode::AND) {
+            // Match ALL patterns (AND logic)
+            for (const auto& pattern : patterns) {
+                try {
+                    std::regex re(pattern, std::regex::icase | std::regex::ECMAScript); // Case-insensitive
+                    if (!std::regex_match(filename, re)) {
+                        return false;
+                    }
+                }
+                catch (const std::regex_error& e) {
+                    std::lock_guard<std::mutex> coutLock(coutMutex);
+                    std::cerr << "Regex error for pattern '" << pattern << "': " << e.what() << "\n";
+                    return false;
+                }
+            }
+            return true;
+        }
+        else {
+            // SINGLE mode - match the only pattern
+            try {
+                std::regex re(patterns[0], std::regex::icase | std::regex::ECMAScript); // Case-insensitive
+                return std::regex_match(filename, re);
+            }
+            catch (const std::regex_error& e) {
+                std::lock_guard<std::mutex> coutLock(coutMutex);
+                std::cerr << "Regex error for pattern '" << patterns[0] << "': " << e.what() << "\n";
+                return false;
+            }
+        }
+    }
 }
 
 /**
  * Searches for files in a directory and its subdirectories
  */
-void searchInDirectory(const fs::path& directory, const std::vector<std::string>& filenamePatterns) {
+void searchInDirectory(const fs::path& directory, const std::vector<std::string>& filenamePatterns,
+    SearchMode mode, PatternType patternType) {
     try {
         if (!fs::exists(directory) || !fs::is_directory(directory)) {
             return;
@@ -223,11 +409,11 @@ void searchInDirectory(const fs::path& directory, const std::vector<std::string>
             fs::directory_options::skip_permission_denied)) {
             try {
                 if (entry.is_directory()) {
-                    launchSearch(entry.path(), filenamePatterns);
+                    launchSearch(entry.path(), filenamePatterns, mode, patternType);
                 }
                 else if (entry.is_regular_file()) {
                     std::string entryFilename = entry.path().filename().string();
-                    if (matchesAnyPattern(entryFilename, filenamePatterns)) {
+                    if (matchesPatterns(entryFilename, filenamePatterns, mode, patternType)) {
                         std::string absolutePath = fs::absolute(entry.path()).string();
                         std::string result = "Found " + entryFilename + " at: " + absolutePath;
 
@@ -257,10 +443,11 @@ void searchInDirectory(const fs::path& directory, const std::vector<std::string>
 /**
  * Launches a new search thread or performs search directly if thread limit reached
  */
-void launchSearch(const fs::path& directory, const std::vector<std::string>& filenamePatterns) {
+void launchSearch(const fs::path& directory, const std::vector<std::string>& filenamePatterns,
+    SearchMode mode, PatternType patternType) {
     if (activeThreads >= maxThreads) {
         // Execute directly if thread limit reached
-        searchInDirectory(directory, filenamePatterns);
+        searchInDirectory(directory, filenamePatterns, mode, patternType);
         return;
     }
 
@@ -268,8 +455,8 @@ void launchSearch(const fs::path& directory, const std::vector<std::string>& fil
     std::lock_guard<std::mutex> lock(threadsMutex);
     activeThreads++;
 
-    threads.emplace_back([directory, filenamePatterns]() {
-        searchInDirectory(directory, filenamePatterns);
+    threads.emplace_back([directory, filenamePatterns, mode, patternType]() {
+        searchInDirectory(directory, filenamePatterns, mode, patternType);
         activeThreads--;
         threadsCV.notify_one();  // Notify main thread about completion
         });
@@ -279,42 +466,45 @@ void launchSearch(const fs::path& directory, const std::vector<std::string>& fil
  * Gets user input for interactive mode
  */
 void getInteractiveInput(std::vector<std::string>& targetPatterns, std::string& startingDir,
-    bool& saveToFile, int& threadCount) {
+    bool& saveToFile, int& threadCount, SearchMode& searchMode, PatternType& patternType) {
     std::cout << " Quick File Search (QSF)\n\n";
 
     // Get target patterns
     std::string input;
     while (targetPatterns.empty()) {
-        std::cout << "Enter file name patterns to search for (case insensitive)\n";
-        std::cout << "You can enter multiple patterns separated by commas: ";
+        std::cout << "Enter file name patterns to search for:\n";
+        std::cout << "  Simple patterns: 'hello&&.txt' (case-insensitive substring)\n";
+        std::cout << "  Regex patterns: '/.*\\.(txt|pdf)/' (wrap regex in /.../)\n";
+        std::cout << "Note: In regex, use \\. for literal dot, \\\\ for backslash\n";
+        std::cout << "Logical operators:\n";
+        std::cout << "  - pattern1&&pattern2  (AND - match ALL patterns)\n";
+        std::cout << "  - pattern1||pattern2  (OR - match ANY pattern)\n";
+        std::cout << "  - pattern             (single pattern)\n";
+        std::cout << "Enter patterns: ";
         std::getline(std::cin, input);
 
-        if (input.empty()) {
-            std::cout << "At least one pattern is required.\n";
-            continue;
-        }
-
-        targetPatterns = splitString(input, ',');
-
-        // Remove any leading/trailing whitespace from patterns
-        for (auto& pattern : targetPatterns) {
-            pattern.erase(0, pattern.find_first_not_of(" \t"));
-            pattern.erase(pattern.find_last_not_of(" \t") + 1);
-        }
-
-        // Remove empty patterns
-        targetPatterns.erase(
-            std::remove_if(targetPatterns.begin(), targetPatterns.end(),
-                [](const std::string& s) { return s.empty(); }),
-            targetPatterns.end()
-        );
-
-        if (targetPatterns.empty()) {
-            std::cout << "No valid patterns entered.\n";
+        if (!parseSearchPatterns(input, targetPatterns, searchMode, patternType)) {
+            std::cout << "Invalid input. Please try again.\n";
         }
     }
 
-    std::cout << "\nYour system has " << maxThreads << " logical cores available.\n";
+    // Display search mode
+    std::string modeStr;
+    if (searchMode == SearchMode::AND) {
+        modeStr = "AND (match all patterns)";
+    }
+    else if (searchMode == SearchMode::OR) {
+        modeStr = "OR (match any pattern)";
+    }
+    else {
+        modeStr = "SINGLE (match one pattern)";
+    }
+
+    std::string typeStr = (patternType == PatternType::REGEX) ? "REGEX" : "SIMPLE";
+
+    std::cout << "\nSearch mode: " << modeStr << "\n";
+    std::cout << "Pattern type: " << typeStr << "\n";
+    std::cout << "Your system has " << maxThreads << " logical cores available.\n";
 
     // Get thread count
     while (true) {
@@ -428,15 +618,17 @@ int main(int argc, char* argv[]) {
     bool saveToFile = false;
     bool verboseOutput = true;
     bool interactiveMode = (argc == 1);
+    SearchMode searchMode = SearchMode::OR;
+    PatternType patternType = PatternType::SIMPLE;
 
     // Process command line arguments or get interactive input
     if (interactiveMode) {
         int threadCount;
-        getInteractiveInput(targetPatterns, startingDir, saveToFile, threadCount);
+        getInteractiveInput(targetPatterns, startingDir, saveToFile, threadCount, searchMode, patternType);
         maxThreads = threadCount;
     }
     else {
-        if (!validateArguments(argc, argv, targetPatterns, startingDir, saveToFile, verboseOutput)) {
+        if (!validateArguments(argc, argv, targetPatterns, startingDir, saveToFile, verboseOutput, searchMode, patternType)) {
             return 1;
         }
         printDuringSearch = verboseOutput;
@@ -447,15 +639,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Display search configuration
-    std::cout << "\nStarting search for patterns: ";
+    std::cout << "Pattern type: " << (patternType == PatternType::REGEX ? "REGEX" : "SIMPLE (case-insensitive)") << "\n";
+    std::cout << "Patterns: ";
     for (size_t i = 0; i < targetPatterns.size(); ++i) {
-        std::cout << "'" << targetPatterns[i] << "'";
+        if (patternType == PatternType::REGEX) {
+            std::cout << "'/" << targetPatterns[i] << "/'";
+        }
+        else {
+            std::cout << "'" << targetPatterns[i] << "'";
+        }
         if (i < targetPatterns.size() - 1) {
-            std::cout << ", ";
+            if (searchMode == SearchMode::AND) {
+                std::cout << " && ";
+            }
+            else if (searchMode == SearchMode::OR) {
+                std::cout << " || ";
+            }
         }
     }
-    std::cout << " using " << maxThreads << " threads...\n";
+    std::cout << "\nUsing " << maxThreads << " threads...\n";
     std::cout << "Starting from directory: " << startingDir << "\n";
     if (saveToFile) {
         std::cout << "Results will be saved to 'founded.txt'\n";
@@ -465,7 +667,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Search in progress... Please wait.\n";
 
     // Begin search
-    searchInDirectory(startingDir, targetPatterns);
+    searchInDirectory(startingDir, targetPatterns, searchMode, patternType);
 
     // Wait for all threads to complete
     {
