@@ -18,7 +18,7 @@ add_executable(qfs "QFS.cpp")
 target_compile_features(qfs PRIVATE cxx_std_17)
 
 # Ensure C++17 is required
-set_target_properties(QFS PROPERTIES
+set_target_properties(qfs PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
@@ -69,4 +69,5 @@ message(STATUS "  Version: ${PROJECT_VERSION}")
 message(STATUS "  C++ Standard: C++17")
 message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+
 
