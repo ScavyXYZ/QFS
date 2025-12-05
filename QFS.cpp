@@ -181,18 +181,28 @@ bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetP
         return false; // Interactive mode
     }
 
-    // Parse target patterns with logical operators
+    // Check for --help as first argument
     std::string firstArg = argv[1];
+    if (firstArg == "--help") {
+        printUsage(argv[0]);
+        exit(0); // Exit after showing help
+    }
+
+    // Parse target patterns with logical operators
     if (!parseSearchPatterns(firstArg, targetPatterns, searchMode, patternType)) {
         std::cerr << "Error: Invalid search pattern\n";
         return false;
     }
 
-    // Parse options
+    // Parse other options
     for (int i = 2; i < argc; ) {
         std::string arg = argv[i];
 
-        if (arg == "--threads") {
+        if (arg == "--help") {
+            printUsage(argv[0]);
+            exit(0);
+        }
+        else if (arg == "--threads") {
             if (i + 1 >= argc || argv[i + 1][0] == '-') {
                 std::cerr << "Error: --threads requires a numeric argument\n";
                 return false;
@@ -245,10 +255,6 @@ bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetP
             }
             verboseOutput = (val == "1");
             i++;
-        }
-        else if (arg == "--help") {
-            printUsage(argv[0]);
-            return false;
         }
         else {
             std::cerr << "Error: Unknown option: " << arg << "\n";
