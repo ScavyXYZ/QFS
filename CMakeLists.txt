@@ -7,16 +7,15 @@ if(POLICY CMP0141)
 endif()
 
 # Project definition
-project("QFS" 
-        VERSION 2.0.0
+project("qfs"
         DESCRIPTION "Quick File Search - Multi-threaded file search with logical operators and regex support"
         LANGUAGES CXX)
 
 # Create executable
-add_executable(QFS "QFS.cpp")
+add_executable(qfs "QFS.cpp")
 
 # Set C++ standard to C++17 (required for <filesystem>)
-target_compile_features(QFS PRIVATE cxx_std_17)
+target_compile_features(qfs PRIVATE cxx_std_17)
 
 # Ensure C++17 is required
 set_target_properties(QFS PROPERTIES
@@ -28,45 +27,46 @@ set_target_properties(QFS PROPERTIES
 # Platform-specific settings
 if(WIN32)
     # Windows-specific settings
-    target_compile_definitions(QFS PRIVATE 
+    target_compile_definitions(qfs PRIVATE 
         _CRT_SECURE_NO_WARNINGS
         NOMINMAX
     )
 elseif(UNIX)
     # Linux/Unix-specific settings
-    target_link_libraries(QFS PRIVATE pthread)
+    target_link_libraries(qfs PRIVATE pthread)
     
     # Link filesystem library if needed (required for GCC < 9)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
-        target_link_libraries(QFS PRIVATE stdc++fs)
+        target_link_libraries(qfs PRIVATE stdc++fs)
     endif()
 endif()
 
 # Compiler-specific optimizations
 if(MSVC)
-    target_compile_options(QFS PRIVATE 
+    target_compile_options(qfs PRIVATE 
         /W4          # Warning level 4
         /permissive- # Standards conformance
         $<$<CONFIG:Release>:/O2 /GL>  # Optimize for speed and whole program optimization
     )
-    target_link_options(QFS PRIVATE
+    target_link_options(qfs PRIVATE
         $<$<CONFIG:Release>:/LTCG>    # Link-time code generation
     )
 else()
-    target_compile_options(QFS PRIVATE
+    target_compile_options(qfs PRIVATE
         -Wall -Wextra -Wpedantic      # Enable warnings
         $<$<CONFIG:Release>:-O3>      # Optimize for speed
     )
 endif()
 
 # Installation rules (optional)
-install(TARGETS QFS
+install(TARGETS qfs
         RUNTIME DESTINATION bin
 )
 
 # Print build information
-message(STATUS "QFS Configuration:")
+message(STATUS "qfs Configuration:")
 message(STATUS "  Version: ${PROJECT_VERSION}")
 message(STATUS "  C++ Standard: C++17")
 message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+
