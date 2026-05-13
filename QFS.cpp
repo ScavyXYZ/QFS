@@ -14,6 +14,8 @@
 #include <condition_variable>
 #include <regex>
 
+#include "rang.hpp"
+
 namespace fs = std::filesystem;
 
 // Global synchronization primitives
@@ -30,6 +32,10 @@ std::atomic<int> maxThreads(std::thread::hardware_concurrency()); // Maximum all
 std::vector<std::string> searchResults;  // Stores found file paths
 std::vector<std::thread> threads;        // Active search threads
 std::atomic<bool> printDuringSearch(true); // Controls real-time output
+bool searchDirectories = false;          // Search directory names as well
+
+// Save to file
+std::string saveFilename;                // If not empty, results will be saved to this file
 
 // Search modes and regex flag
 enum class SearchMode {
@@ -50,8 +56,7 @@ void searchInDirectory(const fs::path& directory, const std::vector<std::string>
     SearchMode mode, PatternType patternType);
 void printUsage(const char* programName);
 bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetPatterns,
-    std::string& startingDir, bool& saveToFile, bool& verboseOutput,
-    SearchMode& searchMode, PatternType& patternType);
+    std::string& startingDir, SearchMode& searchMode, PatternType& patternType);
 bool parseSearchPatterns(const std::string& input, std::vector<std::string>& patterns,
     SearchMode& mode, PatternType& patternType);
 bool matchesPatterns(const std::string& filename, const std::vector<std::string>& patterns,
@@ -174,8 +179,7 @@ bool parseSearchPatterns(const std::string& input, std::vector<std::string>& pat
  * Validates command line arguments and extracts parameters
  */
 bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetPatterns,
-    std::string& startingDir, bool& saveToFile, bool& verboseOutput,
-    SearchMode& searchMode, PatternType& patternType) {
+    std::string& startingDir, SearchMode& searchMode, PatternType& patternType) {
 
     if (argc < 2) {
         return false; // Interactive mode
@@ -185,7 +189,7 @@ bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetP
     std::string firstArg = argv[1];
     if (firstArg == "--help") {
         printUsage(argv[0]);
-        exit(0); // Exit after showing help
+        exit(0);
     }
 
     // Parse target patterns with logical operators
@@ -232,28 +236,18 @@ bool validateArguments(int argc, char* argv[], std::vector<std::string>& targetP
         }
         else if (arg == "--save") {
             if (i + 1 >= argc || argv[i + 1][0] == '-') {
-                std::cerr << "Error: --save requires a 0 or 1 argument\n";
+                std::cerr << "Error: --save requires a filename argument\n";
                 return false;
             }
-            std::string val = argv[++i];
-            if (val != "0" && val != "1") {
-                std::cerr << "Error: --save must be 0 or 1\n";
-                return false;
-            }
-            saveToFile = (val == "1");
+            saveFilename = argv[++i];
             i++;
         }
-        else if (arg == "--verbose") {
-            if (i + 1 >= argc || argv[i + 1][0] == '-') {
-                std::cerr << "Error: --verbose requires a 0 or 1 argument\n";
-                return false;
-            }
-            std::string val = argv[++i];
-            if (val != "0" && val != "1") {
-                std::cerr << "Error: --verbose must be 0 or 1\n";
-                return false;
-            }
-            verboseOutput = (val == "1");
+        else if (arg == "--noverbose") {
+            printDuringSearch = false;
+            i++;
+        }
+        else if (arg == "--searchdir") {
+            searchDirectories = true;
             i++;
         }
         else {
@@ -300,8 +294,9 @@ void printUsage(const char* programName) {
     std::cout << "  --threads <num>        Number of threads to use (1-"
         << std::thread::hardware_concurrency() << ", default: all cores)\n";
     std::cout << "  --dir <directory>      Starting directory (default: current directory)\n";
-    std::cout << "  --save <0|1>           Save results to file (1=yes, 0=no, default: 0)\n";
-    std::cout << "  --verbose <0|1>        Print results during search when saving to file (default: 1)\n";
+    std::cout << "  --save <filename>      Save results to specified file\n";
+    std::cout << "  --noverbose            Do not print results during search\n";
+    std::cout << "  --searchdir            Include directory names in search\n";
     std::cout << "  --help                 Show this help message\n";
 }
 
@@ -356,7 +351,7 @@ bool matchesPatterns(const std::string& filename, const std::vector<std::string>
             // Match ANY pattern (OR logic)
             for (const auto& pattern : patterns) {
                 try {
-                    std::regex re(pattern, std::regex::icase | std::regex::ECMAScript); // Case-insensitive
+                    std::regex re(pattern, std::regex::icase | std::regex::ECMAScript);
                     if (std::regex_match(filename, re)) {
                         return true;
                     }
@@ -373,7 +368,7 @@ bool matchesPatterns(const std::string& filename, const std::vector<std::string>
             // Match ALL patterns (AND logic)
             for (const auto& pattern : patterns) {
                 try {
-                    std::regex re(pattern, std::regex::icase | std::regex::ECMAScript); // Case-insensitive
+                    std::regex re(pattern, std::regex::icase | std::regex::ECMAScript);
                     if (!std::regex_match(filename, re)) {
                         return false;
                     }
@@ -389,7 +384,7 @@ bool matchesPatterns(const std::string& filename, const std::vector<std::string>
         else {
             // SINGLE mode - match the only pattern
             try {
-                std::regex re(patterns[0], std::regex::icase | std::regex::ECMAScript); // Case-insensitive
+                std::regex re(patterns[0], std::regex::icase | std::regex::ECMAScript);
                 return std::regex_match(filename, re);
             }
             catch (const std::regex_error& e) {
@@ -402,7 +397,7 @@ bool matchesPatterns(const std::string& filename, const std::vector<std::string>
 }
 
 /**
- * Searches for files in a directory and its subdirectories
+ * Searches for files and optionally directories in a directory and its subdirectories
  */
 void searchInDirectory(const fs::path& directory, const std::vector<std::string>& filenamePatterns,
     SearchMode mode, PatternType patternType) {
@@ -415,7 +410,30 @@ void searchInDirectory(const fs::path& directory, const std::vector<std::string>
             fs::directory_options::skip_permission_denied)) {
             try {
                 if (entry.is_directory()) {
+                    // Recurse into subdirectory
                     launchSearch(entry.path(), filenamePatterns, mode, patternType);
+
+                    // Check if directory name matches when enabled
+                    if (searchDirectories) {
+                        std::string dirName = entry.path().filename().string();
+                        if (matchesPatterns(dirName, filenamePatterns, mode, patternType)) {
+                            std::string absolutePath = fs::absolute(entry.path()).string();
+                            std::string result = "Found directory " + dirName + " at: " + absolutePath;
+
+                            {
+                                std::lock_guard<std::mutex> lock(resultsMutex);
+                                searchResults.push_back(result);
+                            }
+
+                            if (printDuringSearch) {
+                                std::lock_guard<std::mutex> coutLock(coutMutex);
+                                std::cout << "Found directory "
+                                    << rang::fg::green << rang::style::bold << dirName
+                                    << rang::style::reset << rang::fg::reset
+                                    << " at: " << absolutePath << std::endl;
+                            }
+                        }
+                    }
                 }
                 else if (entry.is_regular_file()) {
                     std::string entryFilename = entry.path().filename().string();
@@ -423,7 +441,6 @@ void searchInDirectory(const fs::path& directory, const std::vector<std::string>
                         std::string absolutePath = fs::absolute(entry.path()).string();
                         std::string result = "Found " + entryFilename + " at: " + absolutePath;
 
-                        // Add to results and optionally print
                         {
                             std::lock_guard<std::mutex> lock(resultsMutex);
                             searchResults.push_back(result);
@@ -431,7 +448,10 @@ void searchInDirectory(const fs::path& directory, const std::vector<std::string>
 
                         if (printDuringSearch) {
                             std::lock_guard<std::mutex> coutLock(coutMutex);
-                            std::cout << result << std::endl;
+                            std::cout << "Found "
+                                << rang::fg::green << rang::style::bold << entryFilename
+                                << rang::style::reset << rang::fg::reset
+                                << " at: " << absolutePath << std::endl;
                         }
                     }
                 }
@@ -464,7 +484,7 @@ void launchSearch(const fs::path& directory, const std::vector<std::string>& fil
     threads.emplace_back([directory, filenamePatterns, mode, patternType]() {
         searchInDirectory(directory, filenamePatterns, mode, patternType);
         activeThreads--;
-        threadsCV.notify_one();  // Notify main thread about completion
+        threadsCV.notify_one();
         });
 }
 
@@ -472,7 +492,7 @@ void launchSearch(const fs::path& directory, const std::vector<std::string>& fil
  * Gets user input for interactive mode
  */
 void getInteractiveInput(std::vector<std::string>& targetPatterns, std::string& startingDir,
-    bool& saveToFile, int& threadCount, SearchMode& searchMode, PatternType& patternType) {
+    int& threadCount, SearchMode& searchMode, PatternType& patternType) {
     std::cout << " Quick File Search (QSF)\n\n";
 
     // Get target patterns
@@ -531,13 +551,23 @@ void getInteractiveInput(std::vector<std::string>& targetPatterns, std::string& 
     // Get save preferences
     std::cout << "Save search results to file? (y/n, default: n): ";
     std::getline(std::cin, input);
-    saveToFile = (input == "y" || input == "Y");
-
-    if (saveToFile) {
-        std::cout << "Print results during search? (y/n, default: y): ";
-        std::getline(std::cin, input);
-        printDuringSearch = !(input == "N" || input == "n");
+    if (input == "y" || input == "Y") {
+        std::string filenameInput;
+        std::cout << "Enter filename to save results (default: founded.txt): ";
+        std::getline(std::cin, filenameInput);
+        if (filenameInput.empty()) filenameInput = "founded.txt";
+        saveFilename = filenameInput;
     }
+
+    // Verbose output
+    std::cout << "Print results during search? (y/n, default: y): ";
+    std::getline(std::cin, input);
+    printDuringSearch = !(input == "N" || input == "n");
+
+    // Directory search option
+    std::cout << "Search for directory names as well? (y/n, default: n): ";
+    std::getline(std::cin, input);
+    searchDirectories = (input == "y" || input == "Y");
 }
 
 /**
@@ -577,10 +607,10 @@ bool setupStartingDirectory(std::string& startingDir) {
 /**
  * Saves search results to file
  */
-bool saveResultsToFile() {
-    std::ofstream outputFile("founded.txt");
+bool saveResultsToFile(const std::string& outputFilename) {
+    std::ofstream outputFile(outputFilename);
     if (!outputFile.is_open()) {
-        std::cerr << "Error: Failed to create results file 'founded.txt'!\n";
+        std::cerr << "Error: Failed to create results file '" << outputFilename << "'!\n";
         return false;
     }
 
@@ -593,23 +623,20 @@ bool saveResultsToFile() {
 /**
  * Displays search summary
  */
-void displayResults(bool saveToFile, bool interactiveMode) {
+void displayResults(bool interactiveMode) {
     if (searchResults.empty()) {
         std::cout << "Nothing found\n";
         return;
     }
 
-    if (saveToFile) {
-        std::cout << "\nSaving...\n";
-        if (saveResultsToFile()) {
-            std::cout << "\n=================================================\n";
-            std::cout << " Search complete! Found " << searchResults.size() << " results\n";
-            std::cout << " Results saved to 'founded.txt'\n";
+    if (!saveFilename.empty()) {
+        if (saveResultsToFile(saveFilename)) {
+            std::cout << "Found " << searchResults.size() << " results. Saved to '"
+                << saveFilename << "'\n";
         }
     }
     else {
-        std::cout << "\n=================================================\n";
-        std::cout << " Search complete! Found " << searchResults.size() << " results\n";
+        std::cout << "Found " << searchResults.size() << " results\n";
     }
 
     if (interactiveMode) {
@@ -621,8 +648,6 @@ void displayResults(bool saveToFile, bool interactiveMode) {
 int main(int argc, char* argv[]) {
     std::vector<std::string> targetPatterns;
     std::string startingDir;
-    bool saveToFile = false;
-    bool verboseOutput = true;
     bool interactiveMode = (argc == 1);
     SearchMode searchMode = SearchMode::OR;
     PatternType patternType = PatternType::SIMPLE;
@@ -630,14 +655,18 @@ int main(int argc, char* argv[]) {
     // Process command line arguments or get interactive input
     if (interactiveMode) {
         int threadCount;
-        getInteractiveInput(targetPatterns, startingDir, saveToFile, threadCount, searchMode, patternType);
+        getInteractiveInput(targetPatterns, startingDir, threadCount, searchMode, patternType);
         maxThreads = threadCount;
     }
     else {
-        if (!validateArguments(argc, argv, targetPatterns, startingDir, saveToFile, verboseOutput, searchMode, patternType)) {
+        // Reset defaults for command line (verbose on, save off, searchdir off)
+        printDuringSearch = true;
+        saveFilename.clear();
+        searchDirectories = false;
+
+        if (!validateArguments(argc, argv, targetPatterns, startingDir, searchMode, patternType)) {
             return 1;
         }
-        printDuringSearch = verboseOutput;
     }
 
     // Setup and validate starting directory
@@ -665,12 +694,14 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "\nUsing " << maxThreads << " threads...\n";
     std::cout << "Starting from directory: " << startingDir << "\n";
-    if (saveToFile) {
-        std::cout << "Results will be saved to 'founded.txt'\n";
+    if (searchDirectories) {
+        std::cout << "Directory names will be included in the search\n";
+    }
+    if (!saveFilename.empty()) {
+        std::cout << "Results will be saved to '" << saveFilename << "'\n";
         std::cout << "Results will be " << (printDuringSearch ? "" : "NOT ")
             << "printed during search\n";
     }
-    std::cout << "Search in progress... Please wait.\n";
 
     // Begin search
     searchInDirectory(startingDir, targetPatterns, searchMode, patternType);
@@ -691,7 +722,7 @@ int main(int argc, char* argv[]) {
 
     // Sort and display results
     std::sort(searchResults.begin(), searchResults.end());
-    displayResults(saveToFile, interactiveMode);
+    displayResults(interactiveMode);
 
     return 0;
 }
