@@ -620,31 +620,6 @@ bool saveResultsToFile(const std::string& outputFilename) {
     return true;
 }
 
-/**
- * Displays search summary
- */
-void displayResults(bool interactiveMode) {
-    if (searchResults.empty()) {
-        std::cout << "Nothing found\n";
-        return;
-    }
-
-    if (!saveFilename.empty()) {
-        if (saveResultsToFile(saveFilename)) {
-            std::cout << "Found " << searchResults.size() << " results. Saved to '"
-                << saveFilename << "'\n";
-        }
-    }
-    else {
-        std::cout << "Found " << searchResults.size() << " results\n";
-    }
-
-    if (interactiveMode) {
-        std::cout << "Press enter to close...";
-        std::cin.ignore();
-    }
-}
-
 int main(int argc, char* argv[]) {
     std::vector<std::string> targetPatterns;
     std::string startingDir;
@@ -653,7 +628,7 @@ int main(int argc, char* argv[]) {
     PatternType patternType = PatternType::SIMPLE;
 
     // Process command line arguments or get interactive input
-    if (interactiveMode) {
+    if (interactiveMode) { 
         int threadCount;
         getInteractiveInput(targetPatterns, startingDir, threadCount, searchMode, patternType);
         maxThreads = threadCount;
@@ -674,35 +649,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "Pattern type: " << (patternType == PatternType::REGEX ? "REGEX" : "SIMPLE (case-insensitive)") << "\n";
-    std::cout << "Patterns: ";
-    for (size_t i = 0; i < targetPatterns.size(); ++i) {
-        if (patternType == PatternType::REGEX) {
-            std::cout << "'/" << targetPatterns[i] << "/'";
-        }
-        else {
-            std::cout << "'" << targetPatterns[i] << "'";
-        }
-        if (i < targetPatterns.size() - 1) {
-            if (searchMode == SearchMode::AND) {
-                std::cout << " && ";
-            }
-            else if (searchMode == SearchMode::OR) {
-                std::cout << " || ";
-            }
-        }
-    }
-    std::cout << "\nUsing " << maxThreads << " threads...\n";
-    std::cout << "Starting from directory: " << startingDir << "\n";
-    if (searchDirectories) {
-        std::cout << "Directory names will be included in the search\n";
-    }
-    if (!saveFilename.empty()) {
-        std::cout << "Results will be saved to '" << saveFilename << "'\n";
-        std::cout << "Results will be " << (printDuringSearch ? "" : "NOT ")
-            << "printed during search\n";
-    }
-
     // Begin search
     searchInDirectory(startingDir, targetPatterns, searchMode, patternType);
 
@@ -720,9 +666,18 @@ int main(int argc, char* argv[]) {
     }
     threads.clear();
 
-    // Sort and display results
+    // Sort results but do not print count or summary
     std::sort(searchResults.begin(), searchResults.end());
-    displayResults(interactiveMode);
+
+    // Save to file if requested (no confirmation message printed)
+    if (!saveFilename.empty()) {
+        saveResultsToFile(saveFilename); // error output goes to cerr if file fails
+    }
+
+    if (interactiveMode) {
+        std::cout << "Press enter to close...";
+        std::cin.ignore();
+    }
 
     return 0;
 }
